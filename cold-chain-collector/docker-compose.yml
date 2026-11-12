@@ -1,0 +1,44 @@
+services:
+  web:
+    build: .
+    image: cold-chain-collector:latest
+    container_name: cold-chain-web
+    ports:
+      - "8000:8000"
+    environment:
+      WATCH_DIR: /data/gateway
+      ACTIVE_FILE: temperature.log
+      DB_PATH: /data/collector/collector.db
+      POLL_INTERVAL: "1"
+      AUTOSTART: "true"
+      HTTP_PORT: "8000"
+    volumes:
+      - gateway-data:/data/gateway
+      - collector-data:/data/collector
+    restart: unless-stopped
+
+  gateway:
+    # The simulator only needs the Python runtime; reuse the same image and
+    # override its command.
+    image: cold-chain-collector:latest
+    container_name: cold-chain-gateway
+    depends_on:
+      - web
+    command: ["python", "-I", "/simulator/simulator.py"]
+    environment:
+      WATCH_DIR: /data/gateway
+      ACTIVE_FILE: temperature.log
+      EMIT_INTERVAL: "1"
+      ROTATE_EVERY: "20"
+      HALF_LINE_EVERY: "7"
+      BAD_LINE_EVERY: "11"
+      WAYBILLS: "4"
+      SEED: "20261112"
+    volumes:
+      - gateway-data:/data/gateway
+      - ./gateway:/simulator:ro
+    restart: unless-stopped
+
+volumes:
+  gateway-data:
+  collector-data:

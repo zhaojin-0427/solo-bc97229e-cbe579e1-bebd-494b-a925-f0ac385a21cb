@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>冷链温度日志采集台</title>
+<style>
+  :root { --bg:#0f1720; --card:#18232f; --line:#273747; --fg:#e6edf3;
+          --muted:#8ba0b4; --accent:#38bdf8; --ok:#34d399; --warn:#fbbf24;
+          --err:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",
+         "PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:18px 28px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; }
+  main { padding:22px 28px; max-width:1200px; margin:0 auto; }
+  .pill { padding:3px 12px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.on  { background:rgba(52,211,153,.15); color:var(--ok); }
+  .pill.off { background:rgba(248,113,113,.15); color:var(--err); }
+  button { background:var(--accent); color:#06283d; border:0; border-radius:8px;
+           padding:8px 18px; font-weight:600; cursor:pointer; }
+  button.secondary { background:var(--line); color:var(--fg); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:18px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:16px; }
+  .card .k { color:var(--muted); font-size:12px; }
+  .card .v { font-size:24px; font-weight:700; margin-top:4px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px;
+            padding:18px; margin-bottom:18px; }
+  section h2 { font-size:15px; margin:0 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+          vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .tag { font-size:11px; padding:2px 8px; border-radius:999px; }
+  .tag.active          { background:rgba(56,189,248,.18); color:var(--accent); }
+  .tag.rotated         { background:rgba(251,191,36,.18); color:var(--warn); }
+  .tag.rotated_pending { background:rgba(251,191,36,.18); color:var(--warn); }
+  .tag.completed       { background:rgba(52,211,153,.18); color:var(--ok); }
+  input[type=text] { background:#0c141d; border:1px solid var(--line); color:var(--fg);
+                     border-radius:8px; padding:8px 12px; min-width:260px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  pre { white-space:pre-wrap; word-break:break-all; margin:0; color:var(--muted);
+        font-size:12px; max-width:420px; }
+  .err-text { color:var(--err); }
+  .banner { color:var(--err); font-size:13px; margin-left:auto; }
+  code { background:#0c141d; padding:1px 6px; border-radius:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>❄️ 冷链温度日志采集台</h1>
+  <span id="pill" class="pill off">未运行</span>
+  <span class="muted" id="tick-info">—</span>
+  <span class="banner" id="last-error"></span>
+  <span style="margin-left:auto" class="row">
+    <button id="btn-start">启动采集</button>
+    <button id="btn-stop" class="secondary">停止采集</button>
+  </span>
+</header>
+<main>
+  <div class="grid">
+    <div class="card"><div class="k">已入库记录</div><div class="v" id="t-readings">–</div></div>
+    <div class="card"><div class="k">坏行（跳过）</div><div class="v" id="t-errors">–</div></div>
+    <div class="card"><div class="k">运单数</div><div class="v" id="t-waybills">–</div></div>
+    <div class="card"><div class="k">扫描轮次</div><div class="v" id="t-ticks">–</div></div>
+  </div>
+
+  <section>
+    <h2>文件读取进度（按文件身份 dev/inode 续读）</h2>
+    <table>
+      <thead><tr>
+        <th>当前路径</th><th class="num">dev:ino</th><th>状态</th>
+        <th class="num">已提交字节</th><th class="num">待写半行字节</th>
+        <th class="num">已处理行数</th><th>最近更新 (UTC)</th>
+      </tr></thead>
+      <tbody id="progress-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>坏行记录（含字节位置与原因）</h2>
+    <table>
+      <thead><tr>
+        <th>文件</th><th class="num">行号</th><th class="num">字节偏移</th>
+        <th>原因</th><th>原始内容</th><th>时间 (UTC)</th>
+      </tr></thead>
+      <tbody id="error-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>按运单追溯</h2>
+    <form id="q-form" class="row">
+      <input type="text" id="q-waybill" placeholder="输入运单号，如 WB-1001" required>
+      <button type="submit">查询</button>
+      <span class="muted" id="q-summary"></span>
+    </form>
+    <div style="margin-top:12px">
+      <table>
+        <thead><tr>
+          <th class="num">#</th><th>运单号</th><th>UTC 时刻</th>
+          <th class="num">温度 (°C)</th><th>来源文件:行</th>
+        </tr></thead>
+        <tbody id="q-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function post(url) {
+  await fetch(url, { method: "POST" });
+  refresh();
+}
+$("btn-start").onclick = () => post("/api/start");
+$("btn-stop").onclick  = () => post("/api/stop");
+
+function tag(status) {
+  const labels = {active:"活动", rotated:"已轮转", rotated_pending:"轮转·待半行",
+                  completed:"已采完"};
+  return `<span class="tag ${status}">${labels[status] || status}</span>`;
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g,
+    (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+
+async function refresh() {
+  const s = await (await fetch("/api/status")).json();
+  const c = s.collector;
+  $("pill").textContent = c.running ? "采集中" : "已停止";
+  $("pill").className = "pill " + (c.running ? "on" : "off");
+  $("btn-start").disabled = c.running;
+  $("btn-stop").disabled = !c.running;
+  $("tick-info").textContent =
+    `轮次 ${c.tick_count} · 最近扫描 ${c.last_tick_at || "—"} · 轮询 ${c.poll_interval_seconds}s`;
+  $("last-error").textContent = c.last_error ? ("错误: " + c.last_error) : "";
+  $("t-readings").textContent = s.totals.readings;
+  $("t-errors").textContent = s.totals.errors;
+  $("t-waybills").textContent = s.totals.waybills;
+  $("t-ticks").textContent = c.tick_count;
+
+  $("progress-body").innerHTML = s.progress.length ? s.progress.map((p) => `
+    <tr>
+      <td><code>${esc(p.path)}</code></td>
+      <td class="num">${p.dev}:${p.ino}</td>
+      <td>${tag(p.status)}</td>
+      <td class="num">${p.committed_off}</td>
+      <td class="num">${p.pending_bytes}</td>
+      <td class="num">${p.line_no}</td>
+      <td class="muted">${esc(p.updated_at)}</td>
+    </tr>`).join("") :
+    `<tr><td colspan="7" class="muted">监视目录中暂无文件</td></tr>`;
+
+  const e = await (await fetch("/api/errors?limit=20")).json();
+  $("error-body").innerHTML = e.errors.length ? e.errors.map((r) => `
+    <tr>
+      <td><code>${esc(r.source_path)}</code></td>
+      <td class="num">${r.line_no}</td>
+      <td class="num">${r.byte_offset}</td>
+      <td class="err-text">${esc(r.reason)}</td>
+      <td><pre>${esc(r.raw_line)}</pre></td>
+      <td class="muted">${esc(r.created_at)}</td>
+    </tr>`).join("") :
+    `<tr><td colspan="6" class="muted">暂无坏行</td></tr>`;
+}
+
+$("q-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const wb = $("q-waybill").value.trim();
+  if (!wb) return;
+  const d = await (await fetch("/api/waybills/" + encodeURIComponent(wb))).json();
+  const st = d.stats || {};
+  $("q-summary").textContent =
+    d.count ? `共 ${d.count} 条 · ${st.first_ts} → ${st.last_ts} · ` +
+              `温度 ${st.min_temperature} ~ ${st.max_temperature} °C，均值 ` +
+              `${Number(st.avg_temperature).toFixed(2)}`
+            : "没有该运单的记录";
+  $("q-body").innerHTML = d.readings.map((r) => `
+    <tr>
+      <td class="num">${r.id}</td>
+      <td>${esc(r.waybill)}</td>
+      <td>${esc(r.ts_utc)}</td>
+      <td class="num">${r.temperature}</td>
+      <td class="muted"><code>${esc(r.source_path)}:${r.line_no}</code></td>
+    </tr>`).join("");
+};
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
